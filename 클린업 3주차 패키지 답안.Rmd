@@ -1,0 +1,322 @@
+---
+title: "package3"
+author: "Lee Jiyeon"
+date: '2021 9 25 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### **Chapter1** 
+```{r}
+###################
+## Preprocessing ##  
+###################
+library(tidyverse)
+library(magrittr)
+library(caret)
+library(MLmetrics)
+
+# 0. 데이터 불러오기/ 미리보기/ 결측치 확인하기
+
+train <- read.csv("train.csv", header=T)
+test <- read.csv('test.csv', header=T)
+
+train %>% str()
+
+# 1. 캐릭터 변수 -> 범주형 변수로 바꾸기
+train %<>% mutate_if(is.character, as.factor)
+
+# 2. 변수 의미 txt 파일 확인하고 남은 범주형 변수들도 factor로 바꿔주기
+train %<>% mutate_at(vars(FLAG_MOBIL, work_phone, phone, email), as.factor)
+
+# 한번더 str 확인해주세요! 
+train %>% str()
+
+# 3. 팩터형 변수들 팩터 몇개인지 개수 그래프 확인
+apply(train %>% select_if(is.factor),2,n_distinct)
+
+df <- data.frame(column = colnames(train %>% select_if(is.factor)),
+           factor_cnt = apply(train %>% select_if(is.factor),2,n_distinct))
+df %>%
+  ggplot(aes(x=reorder(column,factor_cnt), y=factor_cnt)) +
+  geom_col(aes(fill=factor_cnt)) +
+  geom_text(aes(label=paste0(factor_cnt,'개'), color=factor_cnt), hjust=-0.3)+
+  scale_fill_gradient(high="#480048", low="#C04848", name="") +
+  scale_color_gradient(high="#480048", low="#C04848", name="") +
+  labs(x="범주형 변수", y="level 개수") +
+  theme_classic() +
+  theme(axis.text.x = element_text(size=8), legend.position="none")+ 
+  coord_flip()
+
+# 없어도 될 변수는 삭제! 
+train %<>% select(-FLAG_MOBIL) 
+
+# days_birth / days_emplyee 변수 전처리
+train %<>% mutate(AGE = round(DAYS_BIRTH/(-365)),
+                  YEARS_EMPLOYED = ifelse(DAYS_EMPLOYED > 0, 0, DAYS_EMPLOYED/(-365))) %>% 
+  select(-DAYS_BIRTH, -DAYS_EMPLOYED) 
+
+# 3-2. test set도 똑같이 전처리  
+test %<>% mutate_if(is.character, as.factor)
+test %<>% mutate_at(vars(FLAG_MOBIL, work_phone, phone, email), as.factor)
+apply(test %>% select_if(is.factor),2,n_distinct)
+test %<>% select(-FLAG_MOBIL)
+
+test %<>% mutate(AGE = round(DAYS_BIRTH/(-365)),
+                  YEARS_EMPLOYED = ifelse(DAYS_EMPLOYED > 0, 0, DAYS_EMPLOYED/(-365))) %>% 
+  select(-DAYS_BIRTH, -DAYS_EMPLOYED) 
+
+
+# 4. data partition
+idx2 = createDataPartition(train$credit, p=0.8, list=FALSE)
+
+dat_train = train[idx2,]
+dat_val = train[-idx2,]
+```
+
+### **Chapter2**
+```{r}
+###########################
+## Logistisc Regression  ##
+###########################
+# 전체 변수들을 가지고 로지스틱 회귀 모델을 만드세요.
+lr = glm(credit ~ ., family=binomial, data=dat_train)
+summary(lr)
+
+# 변수선택법을 사용해보세요 - 어떤 방식을 사용하든 정답은 없습니다. 
+# 사용한 방식이 무엇인지, 왜 이방법을 사용했는지 설명해주세요!
+lr.reduced = step(lr, direction = "backward")
+summary(lr.reduced)
+
+# 회귀계수 신뢰구간
+confint.default(lr.reduced)
+
+# 오즈비와 회귀계수의 관계를 이용하여 회귀계수 해석
+exp(coef(lr.reduced))
+# 변수들이 많기 때문에 모든 변수들을 일일이 말로 해석할 필요는 없습니다! 코드로 어떻게 구현하고 이를 어떻게 해석하는지 예시로 하나정도만 설명해주시면 됩니다. 
+
+# train error 확인  - 임계값 0.5로 확인 (0.5 이상이면 1, 그외 0)
+yhat <- ifelse(lr.reduced$fitted.values>=0.5, 1, 0)
+
+# confustion matrix 만들어서 확인
+table(real=dat_train$credit, pred=yhat)
+
+
+# validation data predict - 확률값이 나오도록 하세요.
+yhat_val <- predict(lr.reduced,dat_val, type="response")
+summary(yhat_val)
+
+# ROC curve 를 그려보세요. - 해석해보세요!
+library(Epi)
+ROC(test=yhat_val, stat=dat_val$credit,
+    plot="ROC", AUC=T, main="logistic regression")
+
+#Roc 에서 구한 최적의 임계값을 기준으로 Accuracy 구하세요 
+predicted <- ifelse(yhat_val > 0.575, 1, 0)
+observed <- dat_val$credit
+
+mean(predicted == observed)
+
+# MLmetrics 
+Accuracy(predicted, observed)
+F1_Score(predicted, observed, positive = 1)
+
+logistic = c(accuracy = Accuracy(predicted, observed),
+             f1score = F1_Score(predicted, observed, positive = 1))
+
+# 전체 데이터로 학습하여 test셋 예측
+lr = glm(credit ~ ., family=binomial, data=train)
+lr.reduced = step(lr, direction = "backward")
+yhat <- predict(lr.reduced, test, type="response")
+pred_logistic <- ifelse(yhat > 0.575, 1, 0)
+pred_logistic %>% head()
+
+
+#######################################
+## Logistisc Regression with Penalty ##
+#######################################
+library(glmnet)
+
+# model.matrix() 사용하여 범주형 변수들이 더미화된 디자인 행렬 만드세요. 
+# 인터셉트 열 제외 
+# Dummy code categorical predictor variables
+x <- model.matrix(credit~.,dat_train)[,-1]
+y <- dat_train$credit
+
+
+# cv로 최적의 람다를 찾으세요.
+# Find the best lambda using cross-validation
+set.seed(123) 
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+plot(cv.lasso)
+cv.lasso$lambda.min
+
+
+# 찾은 최적의 람다로 라쏘 로지스틱 회귀모델을 적합하세요. 
+# Fit the final model on the training data
+lasso.model <- glmnet(x, y, alpha = 1, family = "binomial",
+                lambda = cv.lasso$lambda.min)
+
+# 모델의 회귀계수를 확인하세요. - 회귀계수가 없는 변수들이 있는 이유를 설명해주세요.  
+# Display regression coefficients
+coef(lasso.model)
+
+
+# validation set 에 대해 예측하세요
+# Make predictions on the test data
+
+# val 데이터셋의 디자인 매트릭스 만들기 
+x.val <- model.matrix(credit ~., dat_val)[,-1]
+yhat.val <- predict(lasso.model, x.val, type="response")
+
+# ROC curve 를 그려보세요. - 해석해보세요!
+ROC(test=yhat.val, stat=dat_val$credit,
+    plot="ROC", AUC=T, main="Lasso logistic regression")
+
+#Roc 에서 구한 최적의 임계값을 기준으로 Accuracy 구하세요 
+predicted <- ifelse(yhat_val > 0.555, 1, 0)
+observed <- dat_val$credit
+mean(predicted == observed)
+
+Accuracy(predicted, observed)
+F1_Score(predicted, observed, positive = 1)
+
+lasso = c(accuracy = Accuracy(predicted, observed),
+          f1score = F1_Score(predicted, observed, positive = 1))
+
+#############
+### Ridge ###
+#############
+
+
+# cv로 최적의 람다를 찾으세요.
+# Find the best lambda using cross-validation
+set.seed(123) 
+cv.ridge <- cv.glmnet(x, y, alpha = 0, family = "binomial")
+plot(cv.ridge)
+cv.ridge$lambda.min
+
+
+# 찾은 최적의 람다로 라쏘 로지스틱 회귀모델을 적합하세요. 
+# Fit the final model on the training data
+ridge.model <- glmnet(x, y, alpha = 0, family = "binomial",
+                      lambda = cv.ridge$lambda.min)
+
+# 모델의 회귀계수를 확인하세요. - 회귀계수가 없는 변수들이 있는 이유를 설명해주세요.  
+# Display regression coefficients
+coef(ridge.model)
+
+
+# validation set 에 대해 예측하세요
+# Make predictions on the test data
+
+# val 데이터셋의 디자인 매트릭스 만들기 
+x.val <- model.matrix(credit ~., dat_val)[,-1]
+yhat.val <- predict(lasso.model, x.val, type="response")
+
+# ROC curve 를 그려보세요. - 해석해보세요!
+ROC(test=yhat.val, stat=dat_val$credit,
+    plot="ROC", AUC=T, main="Ridge logistic regression")
+
+#Roc 에서 구한 최적의 임계값을 기준으로 Accuracy 구하세요 
+predicted <- ifelse(yhat_val > 0.574, 1, 0)
+observed <- dat_val$credit
+mean(predicted == observed)
+
+Accuracy(predicted, observed)
+F1_Score(predicted, observed, positive = 1)
+
+ridge = c(accuracy = Accuracy(predicted, observed),
+          f1score = F1_Score(predicted, observed, positive = 1))
+
+
+# 비교 시각화
+
+metrics <- rownames_to_column(
+  data.frame(rbind(logistic, lasso, ridge)), var = "model") %>% 
+  gather(-model, key="metrics", value="value")
+
+metrics %>% 
+  ggplot(aes(x=model, y=value)) +
+  geom_bar(aes(fill=model), stat='identity', alpha=.9) +
+  geom_text(aes(label=round(value,2), color=model), vjust=-0.5, size=4) +
+  facet_wrap(~metrics) +
+  scale_fill_brewer(palette="Pastel1") +
+  scale_color_brewer(palette = "Pastel1") +
+  theme(panel.background = element_rect(fill="white", color="grey")) +
+  labs(x='', y='')
+
+
+# 전체 데이터로 학습하여 test셋 예측
+x <- model.matrix(credit~.,train)[,-1]
+y <- train$credit
+lasso_m = glmnet(x, y, alpha = 1, family = "binomial", lambda = cv.lasso$lambda.min)
+ridge_m = glmnet(x, y, alpha = 0, family = "binomial", lambda = cv.ridge$lambda.min)
+
+
+test.x <- model.matrix(~ ., test[-1])
+yhat_lasso <- predict(lasso_m, test.x, type="response")
+yhat_ridge <- predict(ridge_m, test.x, type="response")
+
+pred_lasso  <- ifelse(yhat_val > 0.555, 1, 0)
+pred_ridge <- ifelse(yhat_ridge > 0.574, 1,0)
+```
+
+
+### **Chatper 3**
+```{r}
+rm(list=ls())
+########################
+## K-means Clusering  ##
+########################
+library(caret)
+library(corrplot)
+library(cluster)
+library(factoextra)
+library(gridExtra)
+
+# xclara 데이터 불러오기 
+data(xclara)
+
+# 상관관계 확인 
+corrplot(cor(xclara), method="number",diag=F)
+
+# scaling - 스케일링 해줘야 하는 이유 적으세요 
+cluster <-  scale(xclara) %>% as_tibble()
+cluster %>% head()
+
+# Funcluster = kmeans 
+set.seed(123)
+p1 <- fviz_nbclust(x = cluster, FUNcluster = kmeans, method='wss') 
+p2 <- fviz_nbclust(x = cluster, FUNcluster = kmeans, method = "silhouette")
+grid.arrange(p1, p2, ncol=2)
+
+# cluster 개수 - 최적의 클러스터 개수 구하는 방법? 
+kmeans <- kmeans(cluster, nstart = 1, iter.max = 100, centers = 3)
+fviz_cluster(kmeans, cluster, geom="point") +
+  theme_minimal()
+
+# 시각화 - 결과 해석 
+result_cluster <- xclara %>% mutate(cluster=kmeans$cluster)
+
+g1 <- result_cluster %>% 
+  ggplot(aes(x=factor(cluster), y=V1)) +
+  geom_boxplot(aes(fill=factor(cluster), color=factor(cluster)),outlier.shape = NA, alpha=0.3) +
+  stat_boxplot(aes(color=factor(cluster)), geom ='errorbar') +
+  theme_classic() +
+  labs(x='cluster')+
+  theme(legend.position = "none")
+
+g2 <- result_cluster %>% 
+  ggplot(aes(x=factor(cluster), y=V2)) +
+  geom_boxplot(aes(fill=factor(cluster), color=factor(cluster)),outlier.shape = NA, alpha=0.3) +
+  stat_boxplot(aes(color=factor(cluster)), geom ='errorbar') +
+  theme_classic() +
+  labs(x='cluster')+
+  theme(legend.position = "none")
+
+grid.arrange(g1,g2, nrow=1)
+```

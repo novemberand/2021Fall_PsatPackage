@@ -1,0 +1,251 @@
+---
+---
+
+
+## Chatper 1 
+```{r warning=FALSE}
+
+# 패키지 불러오기 -- 아래의 패키지 이외에는 부르지 말아주세요! 
+library(tidyverse)
+library(magrittr)
+library(data.table)
+library(ggpubr)
+library(corrplot)
+library(caret)
+library(Metrics)
+
+# 데이터 불러오기 
+cus_info <- fread("2_cus_info.csv",
+                  header=TRUE, 
+                  data.table = FALSE,
+                  stringsAsFactors = FALSE,
+                  na.strings = c("_", "-"))
+
+act_info <- fread("2_act_info.csv",
+                  header=TRUE,
+                  data.table = FALSE,
+                  stringsAsFactors = FALSE)
+
+cus_info %>% head()
+act_info %>% head()
+
+cus_info %>% str()
+act_info %>% str()
+
+cus_info %>% glimpse()
+act_info %>% glimpse()
+
+dim(cus_info)
+dim(act_info)
+
+cus_info %>% is.na() %>% colSums()
+act_info %>% is.na() %>% colSums()
+
+cus_info %>% is.na() %>% colSums()/nrow(cus_info)
+cus_info$ivs_icn_cd <- NULL
+
+cus_info %>% apply(2, n_distinct)
+act_info %>% apply(2, n_distinct)
+
+act_info$act_opn_ym %>% unique()
+act_info %<>% filter(act_opn_ym!=0)
+
+act_info %<>% 
+  separate(act_opn_ym, c('act_opn_yy', 'act_opn_mm'), sep=4) %>% 
+  mutate_at(vars(act_opn_yy, act_opn_mm), as.numeric)
+
+cus_info %<>% mutate_if(is.numeric, as.character)
+
+cus_info$cus_age <- 
+  ifelse(cus_info$cus_age %in% c("20", "25"), "20s",
+         ifelse(cus_info$cus_age %in% c("30", "35"), "30s",
+                ifelse(cus_info$cus_age %in% c("40","45"), "40s", 
+                       ifelse(cus_info$cus_age %in% c("50", "55"), "50s",
+                              ifelse(cus_info$cus_age %in% c("60", "65"), "60s",
+                                     ifelse(cus_info$cus_age == "0", "10s", "70s"))))))
+
+cus_info$sex_dit_cd <- ifelse(cus_info$sex_dit_cd==1, "M","F")
+
+cus_info$zip_ctp_cd <- 
+  plyr::revalue(cus_info$zip_ctp_cd,
+                replace = c("41"="경기", "11"="서울", "48"="경남",
+                            "26"="부산", "27"="대구", "47"="경북",
+                            "28"="인천", "44"="충남", "46"="전남",
+                            "30"="대전", "29"="광주", "43"="충북",
+                            "45"="전북", "42"="강원", "31"="울산",
+                            "50"="제주","36"="세종"))
+
+cus_info %<>% mutate_at(vars(-cus_id), as.factor)
+cus_info %>% str
+
+
+data <- left_join(act_info, cus_info, by="cus_id")
+rm(act_info, cus_info)
+
+account_cnt <- data %>%
+  group_by(cus_age) %>% 
+  summarise(cus_cnt=n_distinct(cus_id),
+            act_cnt=n(),
+            mean_act_cnt=act_cnt/cus_cnt) 
+account_cnt
+```
+
+## Chapter 2
+
+```{r warning=FALSE}
+na_df <- data.frame(columns=colnames(data),
+           na_count = colSums(is.na(data))) %>%
+  mutate(na_ratio = na_count/nrow(data))
+
+na_df %>% 
+  ggplot(aes(x=reorder(columns,-na_count), y=na_count)) +
+  geom_col(aes(fill = na_count), alpha=.7) +
+  theme_light() + 
+  guides(fill = FALSE) +
+  geom_text(aes(label=paste0(round(na_ratio *100,2), "%")),
+            position = position_stack(vjust = .5), color = 'black') +
+    labs(x="변수", y='결측치 개수') +
+  scale_fill_gradient(low="skyblue", high="blue") +
+  labs(title="변수별 결측치 개수 및 비율") +
+  theme(plot.title = element_text(face="bold", size=20))
+
+
+
+
+data %>%
+  mutate(new2020=ifelse(act_opn_yy==2020,1, 0)) %>% 
+  ggplot() +
+  geom_bar(aes(x=cus_age, fill=factor(new2020)), position="fill") +
+  labs(x="연령대",y="",fill="") +
+  scale_fill_brewer(palette="RdPu", 
+                    labels=c("2020년 이전 개설", "2020년 개설")) +
+  ggtitle(label="연령대별 2020년 신규개설 계좌 비율") +
+  theme(plot.title=element_text(size=20, face="bold"),
+        legend.position="bottom", legend.box="vertical")
+
+
+
+account_cnt %>% 
+  ggplot(aes(x=factor(cus_age))) + 
+  geom_col(aes(y=cus_cnt,fill=factor(cus_age),color=factor(cus_age)),alpha=.4) +
+  geom_line(aes(y=mean_act_cnt*300), group=1, size=.7,linetype="dashed") +
+  geom_point(aes(y=mean_act_cnt*300, fill=factor(cus_age)), 
+             shape = 22, size = 3, color="black") +
+  guides(fill=FALSE, color=FALSE) +
+  geom_text(aes(y=mean_act_cnt*300, 
+                label=paste0(round(mean_act_cnt,2),"개")),
+            vjust = -1)+
+  theme_bw() +
+  labs(x="연령대", y="고객 수") +
+  ggtitle(label = "연령대별 고객 분포와 평균 계좌 개수",
+          subtitle="연령대별 계좌 개수를 고객 수로 나누어 1인당 평균 계좌 개수를 구하여 연령대별 고객 분포와 함께 표현했습니다.") +
+  theme(plot.title=element_text(size=20, face="bold"),
+        plot.subtitle = element_text(size=15, face="italic"))
+
+
+g1 <- data %>% 
+  group_by(cus_age, act_opn_yy) %>% 
+  summarise(n=n()) %>% 
+  ggplot(aes(x=act_opn_yy, y=n, color=cus_age)) +
+  geom_line(aes(group=cus_age)) +
+  geom_point() +
+  theme_light() +
+  labs(x = '연도', y='신규계좌 수', color = '연령대') +
+  ggtitle(label="연도별 신규계좌 수",
+          subtitle="연도별로 새롭게 개설된 신규 계좌 수를 연령대별로 표현한 그래프") +
+  theme(plot.title=element_text(size=20, face="bold"),
+        plot.subtitle = element_text(face="italic"),
+        legend.title = element_text(color="black", face="bold", size=12),
+        legend.text = element_text(face="italic")) +
+  scale_x_continuous(breaks=seq(1970, 2020, 5)) 
+
+  
+
+g2 <- data %>%
+  filter(act_opn_yy == 2020) %>%
+  group_by(cus_age, sex_dit_cd, act_opn_mm) %>%
+  summarise(n=n()) %>% 
+  ggplot(aes(x=act_opn_mm, y=n, color=cus_age)) + 
+  geom_line() +
+  geom_point() + 
+  facet_wrap(~sex_dit_cd, nrow=1) +
+  labs(x = '', y = '개설된 계좌 수', color = '연령대') +
+  scale_x_continuous(breaks = c(1,2,3,4,5,6,7,8,9,10), 
+                     labels = paste0(c(1,2,3,4,5,6,7,8,9,10), "월")) +
+  ggtitle(label="2020년 월별 신규 계좌 수",
+          subtitle="고객 성별 연령별 2020년 월별 신규개설 계좌 수 추이") +
+  theme(plot.title=element_text(size=20, face="bold"),
+        plot.subtitle = element_text(face="italic"),
+        legend.title = element_text(color="black",  face="bold", size=12),
+        legend.text = element_text(face="italic"),
+        strip.background = element_rect(fill="white", color="grey"))
+  
+
+ggarrange(g1, g2, common.legend = TRUE, nrow=2, legend = "right")
+
+
+
+
+rm(list=ls())
+
+
+# scatter plot or density plot , box plot, corrplot, regression line, anova 
+
+data(Salaries, package="carData")
+
+
+Salaries %>% 
+  ggplot(aes(x=yrs.since.phd, y=salary,shape=discipline, color=discipline)) +
+  geom_point() +
+  geom_smooth(method="lm", se=FALSE) +
+  scale_colour_brewer(palette="Set2") +
+  theme_minimal() 
+
+
+Salaries %>% 
+  ggplot(aes(x=rank, y=salary, color=rank)) +
+  geom_boxplot(size=1,
+               outlier.shape=1, 
+               outlier.fill="black",
+               outlier.color="black",
+               outlier.size=3) +
+  geom_jitter(alpha=.5, width=.2) +
+  theme_minimal() +
+  coord_flip() +
+  theme(legend.position="none") 
+  
+```
+
+```{r warning=FALSE}
+
+t.test(salary ~ sex, data = Salaries) 
+
+
+library(corrplot)
+corr <- cor(Salaries %>% select_if(is.numeric))
+
+corrplot(corr, addCoef.col = 'black', 
+         method="shade",
+         diag=FALSE,
+         tl.pos="d",
+         tl.col="black")
+
+
+library(caret)
+library(Metrics)
+
+index = createDataPartition(Salaries$salary,
+                            p=0.7, list=FALSE)
+
+train = Salaries[index,]
+test = Salaries[-index,]
+
+fit <- lm(salary~., data=train)
+summary(fit)
+
+sqrt(mean((train$salary - predict(fit, train)) ^ 2))
+sqrt(mean((test$salary - predict(fit, test)) ^ 2))
+
+rmse(test$salary, predict(fit, test))
+
+```
